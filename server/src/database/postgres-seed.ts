@@ -571,7 +571,7 @@ export async function seedPostgresDatabase() {
     await upsert(userSql, ['usr-staff-smg', 'branch-smg', 'staff', passwordHash, 'NON_TEACHING_STAFF', 'Ganesh Bhat (Administrative Staff)', 'staff@sirmv.edu.in', '9900055555', '/avatars/security.png', 1], 'users');
     await upsert(userSql, ['usr-warden-smg', 'branch-smg', 'warden', passwordHash, 'WARDEN', 'Suresh Poojary (Hostel Warden)', 'warden@sirmv.edu.in', '9900066666', '/avatars/warden.png', 1], 'users');
     await upsert(userSql, ['usr-headwarden-smg', 'branch-smg', 'headwarden', passwordHash, 'HEAD_WARDEN', 'Dr. Chandrakala H (Chief Warden)', 'headwarden@sirmv.edu.in', '9900077777', '/avatars/warden.png', 1], 'users');
-    await upsert(userSql, ['usr-student-smg', 'branch-smg', 'student', passwordHash, 'STUDENT', 'Bhoomika Naik (Student)', 'student@sirmv.edu.in', '9900088888', '/avatars/student_rahul.png', 1], 'users');
+    await upsert(userSql, ['usr-student-smg', 'branch-smg', 'student', passwordHash, 'STUDENT', 'Bhoomika Naik (Student)', 'student@sirmv.edu.in', '9900088888', '/student-profile.png', 1], 'users');
     await upsert(userSql, ['usr-parent-smg', 'branch-smg', 'parent', passwordHash, 'PARENT', 'Mr. Naveen Naik (Parent)', 'parent@sirmv.edu.in', '9900099999', '/avatars/parent.png', 1], 'users');
     await upsert(userSql, ['usr-examdept-smg', 'branch-smg', 'examdept', passwordHash, 'EXAM_DEPARTMENT', 'Mrs. Anitha Rao (Exam Department)', 'examdept@sirmv.edu.in', '9900010101', '/avatars/admin.png', 1], 'users');
 

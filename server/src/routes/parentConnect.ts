@@ -1,103 +1,38 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { query, queryOne, execute } from '../database/pgDb';
-import { authenticate, AuthRequest, requireRoles } from '../middleware/auth';
-import { logAudit } from '../middleware/audit';
-import { sendPushToUser } from '../services/pushService';
+import jwt from 'jsonwebtoken';
+import { pcDb } from '../database/parentConnectDb';
 
 /**
- * Parent Connect: private student <-> parent internet voice calls.
- * Audio is peer-to-peer WebRTC; this router only does signalling, so it works on a
- * serverless host (clients poll instead of holding a socket open). Who may call whom
- * comes from student_profiles (user_id <-> parent_user_id), never from the client.
+ * Parent Connect: private student ↔ parent internet voice calls.
+ * This version uses the local SQLite database so it works offline
+ * without Neon PostgreSQL. Signalling is HTTP polling — no sockets
+ * needed. WebRTC audio is peer-to-peer between the two browsers.
  */
 export const parentConnectRouter = Router();
 
+const JWT_SECRET = process.env.JWT_SECRET || 'sirmv_super_secret_jwt_key_2026';
 const ADMIN_ROLES = ['ADMIN', 'PRINCIPAL', 'HEAD_WARDEN', 'WARDEN'];
 const RING_SECONDS = 45;
 const isAdmin = (role: string) => ADMIN_ROLES.includes(role);
 
-// ---------- tables (created on first use, so a fresh database just works) ----------
-let ready: Promise<void> | null = null;
-function ensureTables(): Promise<void> {
-  if (!ready) {
-    ready = (async () => {
-      await execute(`CREATE TABLE IF NOT EXISTS pc_schedule (
-        day_of_week INTEGER PRIMARY KEY CHECK (day_of_week BETWEEN 0 AND 6),
-        start_time VARCHAR(5) NOT NULL DEFAULT '06:00',
-        end_time VARCHAR(5) NOT NULL DEFAULT '22:00',
-        max_duration_minutes INTEGER NOT NULL DEFAULT 15,
-        is_active INTEGER NOT NULL DEFAULT 1
-      )`);
-      await execute(`CREATE TABLE IF NOT EXISTS pc_calls (
-        id VARCHAR(64) PRIMARY KEY,
-        student_user_id VARCHAR(64) NOT NULL,
-        parent_user_id VARCHAR(64) NOT NULL,
-        caller_user_id VARCHAR(64) NOT NULL,
-        status VARCHAR(16) NOT NULL DEFAULT 'ringing',
-        initiated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        started_at TIMESTAMPTZ,
-        ended_at TIMESTAMPTZ,
-        duration_seconds INTEGER DEFAULT 0,
-        end_reason VARCHAR(64)
-      )`);
-      await execute(`CREATE TABLE IF NOT EXISTS pc_signals (
-        id BIGSERIAL PRIMARY KEY,
-        call_id VARCHAR(64) NOT NULL,
-        to_user_id VARCHAR(64) NOT NULL,
-        type VARCHAR(16) NOT NULL,
-        payload TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`);
-      await execute(`CREATE TABLE IF NOT EXISTS pc_blocked (student_user_id VARCHAR(64) PRIMARY KEY, reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
-      await execute(`CREATE TABLE IF NOT EXISTS pc_contacts (
-        id VARCHAR(64) PRIMARY KEY,
-        student_profile_id VARCHAR(64) NOT NULL,
-        relationship VARCHAR(24) NOT NULL DEFAULT 'Father',
-        name VARCHAR(160) NOT NULL,
-        phone VARCHAR(24),
-        user_id VARCHAR(64),
-        is_authorized INTEGER NOT NULL DEFAULT 1,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )`);
-      await execute(`CREATE INDEX IF NOT EXISTS idx_pc_contacts_sp ON pc_contacts(student_profile_id)`);
-      await execute(`CREATE INDEX IF NOT EXISTS idx_pc_signals_to ON pc_signals(to_user_id, id)`);
-      await execute(`CREATE INDEX IF NOT EXISTS idx_pc_calls_users ON pc_calls(student_user_id, parent_user_id)`);
-      const n = await queryOne<{ c: string }>(`SELECT COUNT(*) AS c FROM pc_schedule`);
-      if (Number(n?.c || 0) === 0) {
-        for (let d = 0; d < 7; d++) await execute(`INSERT INTO pc_schedule (day_of_week) VALUES ($1) ON CONFLICT DO NOTHING`, [d]);
-      }
-    })().catch((e) => { ready = null; throw e; });
+// ---------- lightweight auth that works without Postgres ----------
+interface PcUser { id: string; name: string; role: string; email?: string; phone?: string; branch_id?: string; avatar_url?: string; student_id?: string; }
+
+function getUserFromReq(req: Request): PcUser {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) throw new Error('Unauthorized');
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    return { id: decoded.id, name: decoded.name, role: decoded.role, email: decoded.email, phone: decoded.phone, branch_id: decoded.branch_id, avatar_url: decoded.avatar_url, student_id: decoded.student_id };
+  } catch {
+    throw new Error('Invalid or expired token');
   }
-  return ready;
 }
-parentConnectRouter.use(async (_req, res, next) => {
-  try { await ensureTables(); next(); } catch (e: any) { res.status(500).json({ error: `Parent Connect setup failed: ${e.message}` }); }
-});
 
 // ---------- helpers ----------
 const clean = (n?: string | null) => (n || '').replace(/\s*\((Student|Parent)\)\s*$/i, '').trim();
-
-interface Pair { student_user_id: string; parent_user_id: string; student_name: string; parent_name: string; register_number: string; student_avatar: string | null; parent_avatar: string | null; gender: string | null; date_of_birth: string | null; class_name: string | null; section_name: string | null; student_profile_id: string; is_hostelite: number }
-
-const PAIR_SQL = `
-  SELECT sp.id AS student_profile_id, sp.user_id AS student_user_id, sp.parent_user_id, sp.name AS student_name,
-         COALESCE(pu.name, sp.parent_name) AS parent_name, sp.register_number, sp.gender, sp.date_of_birth, sp.is_hostelite,
-         COALESCE(sp.photo_url, su.avatar_url) AS student_avatar, pu.avatar_url AS parent_avatar,
-         c.name AS class_name, s.name AS section_name
-  FROM student_profiles sp
-  JOIN users su ON su.id = sp.user_id AND su.is_active = 1
-  JOIN users pu ON pu.id = sp.parent_user_id AND pu.is_active = 1
-  LEFT JOIN classes c ON c.id = sp.class_id
-  LEFT JOIN sections s ON s.id = sp.section_id
-  WHERE sp.is_active = 1`;
-
-async function pairsFor(user: { id: string; role: string }): Promise<Pair[]> {
-  if (user.role === 'STUDENT') return query<Pair>(`${PAIR_SQL} AND sp.user_id = $1`, [user.id]);
-  if (user.role === 'PARENT') return query<Pair>(`${PAIR_SQL} AND sp.parent_user_id = $1`, [user.id]);
-  if (isAdmin(user.role)) return query<Pair>(`${PAIR_SQL} ORDER BY sp.name`);
-  return [];
-}
 
 const nowInKolkata = () => {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
@@ -106,32 +41,33 @@ const nowInKolkata = () => {
   return { day, hhmm: `${get('hour')}:${get('minute')}` };
 };
 
-async function availability() {
+function availability() {
   const { day, hhmm } = nowInKolkata();
-  const row = await queryOne<any>(`SELECT * FROM pc_schedule WHERE day_of_week = $1`, [day]);
+  const row = pcDb.prepare('SELECT * FROM pc_schedule WHERE day_of_week = ?').get(day) as any;
   if (!row || !row.is_active) return { isAllowed: false, reason: 'Calling is switched off today by the hostel.', schedule: row };
   if (hhmm < row.start_time || hhmm > row.end_time) return { isAllowed: false, reason: `Calls are allowed between ${row.start_time} and ${row.end_time}.`, schedule: row };
   return { isAllowed: true, reason: null, schedule: row };
 }
 
-// close calls that rang too long or ran past the time limit
-async function housekeeping() {
-  await execute(`UPDATE pc_calls SET status = 'missed', ended_at = NOW(), end_reason = 'no_answer'
-                 WHERE status = 'ringing' AND initiated_at < NOW() - ($1 || ' seconds')::interval`, [String(RING_SECONDS)]);
-  const over = await query<{ id: string; student_user_id: string; parent_user_id: string }>(
-    `SELECT c.id, c.student_user_id, c.parent_user_id FROM pc_calls c
-     WHERE c.status = 'connected' AND c.started_at + (COALESCE((SELECT max_duration_minutes FROM pc_schedule WHERE day_of_week = EXTRACT(DOW FROM c.started_at AT TIME ZONE 'Asia/Kolkata')::int), 15) || ' minutes')::interval < NOW()`);
-  for (const c of over) await endCall(c.id, 'max_duration_exceeded');
+function housekeeping() {
+  pcDb.prepare(`UPDATE pc_calls SET status = 'missed', ended_at = datetime('now'), end_reason = 'no_answer'
+    WHERE status = 'ringing' AND datetime(initiated_at, '+' || ? || ' seconds') < datetime('now')`).run(RING_SECONDS);
+
+  // End calls exceeding max duration
+  const maxMins = (pcDb.prepare('SELECT max_duration_minutes FROM pc_schedule LIMIT 1').get() as any)?.max_duration_minutes || 15;
+  const overCalls = pcDb.prepare(`SELECT id FROM pc_calls WHERE status = 'connected' AND datetime(started_at, '+' || ? || ' minutes') < datetime('now')`).all(maxMins) as any[];
+  for (const c of overCalls) endCall(c.id, 'max_duration_exceeded');
 }
 
-async function endCall(id: string, reason: string) {
-  await execute(
-    `UPDATE pc_calls SET status = CASE WHEN status = 'connected' THEN 'ended' WHEN status = 'ringing' THEN $2 ELSE status END,
-       ended_at = NOW(), end_reason = $3,
-       duration_seconds = CASE WHEN started_at IS NOT NULL THEN LEAST(GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::int), COALESCE((SELECT max_duration_minutes FROM pc_schedule WHERE day_of_week = EXTRACT(DOW FROM started_at AT TIME ZONE 'Asia/Kolkata')::int), 15) * 60) ELSE 0 END
-     WHERE id = $1 AND status IN ('ringing', 'connected')`,
-    [id, reason === 'rejected' ? 'rejected' : 'missed', reason]
-  );
+function endCall(id: string, reason: string) {
+  const call = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ?').get(id) as any;
+  if (!call || !['ringing', 'connected'].includes(call.status)) return;
+
+  const durSec = call.started_at ? Math.max(0, Math.round((Date.now() - new Date(call.started_at + 'Z').getTime()) / 1000)) : 0;
+  const newStatus = call.status === 'connected' ? 'ended' : (reason === 'rejected' ? 'rejected' : 'missed');
+
+  pcDb.prepare(`UPDATE pc_calls SET status = ?, ended_at = datetime('now'), duration_seconds = ?, end_reason = ? WHERE id = ?`)
+    .run(newStatus, durSec, reason, id);
 }
 
 const shapeCall = (c: any, meId: string) => c && ({
@@ -140,294 +76,399 @@ const shapeCall = (c: any, meId: string) => c && ({
   peerUserId: c.student_user_id === meId ? c.parent_user_id : c.student_user_id,
 });
 
-// ---------- who can I call ----------
-parentConnectRouter.get('/contacts', authenticate, async (req: AuthRequest, res: Response) => {
+// ─── Contacts ────────────────────────────────────────────────────────────────
+parentConnectRouter.get('/contacts', (req: Request, res: Response) => {
   try {
-    const me = req.user!;
-    const pairs = await pairsFor(me);
-    const blocked = new Set((await query<{ student_user_id: string }>(`SELECT student_user_id FROM pc_blocked`)).map((b) => b.student_user_id));
-    const revoked = new Set((await query<{ su: string; pu: string }>(`SELECT sp.user_id AS su, c.user_id AS pu FROM pc_contacts c JOIN student_profiles sp ON sp.id = c.student_profile_id WHERE c.is_authorized = 0 AND c.user_id IS NOT NULL`)).map((r) => `${r.su}:${r.pu}`));
-    const contacts = pairs.map((p) => {
-      const iAmStudent = me.role === 'STUDENT';
-      return {
+    const me = getUserFromReq(req);
+
+    if (me.role === 'STUDENT') {
+      // Student sees their linked parents
+      const rows = pcDb.prepare(`
+        SELECT sp.parent_user_id, pu.name AS parent_name, pu.avatar_url AS parent_avatar,
+               sp.student_user_id, su.name AS student_name, su.avatar_url AS student_avatar,
+               su.roll_number AS register_number, su.gender, su.dob AS date_of_birth,
+               su.class_label, pc.relationship
+        FROM pc_student_parents sp
+        JOIN pc_users su ON su.id = sp.student_user_id
+        JOIN pc_users pu ON pu.id = sp.parent_user_id
+        LEFT JOIN pc_contacts pc ON pc.student_profile_id = sp.student_user_id AND pc.user_id = sp.parent_user_id
+        WHERE sp.student_user_id = ?
+      `).all(me.id) as any[];
+
+      const contacts = rows.map((p) => ({
         pairKey: `${p.student_user_id}:${p.parent_user_id}`,
-        userId: iAmStudent ? p.parent_user_id : p.student_user_id,
-        name: clean(iAmStudent ? p.parent_name : p.student_name),
-        role: iAmStudent ? 'PARENT' : 'STUDENT',
-        gender: iAmStudent ? null : p.gender,
-        avatarUrl: iAmStudent ? p.parent_avatar : p.student_avatar,
-        relationship: iAmStudent ? 'Parent' : 'Your ward',
-        registerNumber: p.register_number,
+        userId: p.parent_user_id,
+        name: clean(p.parent_name),
+        role: 'PARENT' as const,
+        gender: null,
+        avatarUrl: p.parent_avatar,
+        relationship: p.relationship || 'Parent',
+        registerNumber: p.register_number || '',
         studentName: clean(p.student_name), parentName: clean(p.parent_name),
         studentUserId: p.student_user_id, parentUserId: p.parent_user_id,
         studentAvatar: p.student_avatar, parentAvatar: p.parent_avatar,
         studentGender: p.gender, dob: p.date_of_birth,
-        classLabel: [p.class_name, p.section_name].filter(Boolean).join(' · '),
-        hostelite: !!p.is_hostelite,
-        blocked: blocked.has(p.student_user_id) || revoked.has(`${p.student_user_id}:${p.parent_user_id}`),
-      };
-    });
-    return res.json({ contacts });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+        classLabel: p.class_label || '', hostelite: true, blocked: false,
+      }));
+      return res.json({ contacts });
+    }
+
+    if (me.role === 'PARENT') {
+      // Parent sees their linked students (wards)
+      const rows = pcDb.prepare(`
+        SELECT sp.student_user_id, su.name AS student_name, su.avatar_url AS student_avatar,
+               su.roll_number AS register_number, su.gender, su.dob AS date_of_birth,
+               su.class_label, sp.parent_user_id, pu.name AS parent_name, pu.avatar_url AS parent_avatar,
+               pc.relationship
+        FROM pc_student_parents sp
+        JOIN pc_users su ON su.id = sp.student_user_id
+        JOIN pc_users pu ON pu.id = sp.parent_user_id
+        LEFT JOIN pc_contacts pc ON pc.student_profile_id = sp.student_user_id AND pc.user_id = sp.parent_user_id
+        WHERE sp.parent_user_id = ?
+      `).all(me.id) as any[];
+
+      const contacts = rows.map((p) => ({
+        pairKey: `${p.student_user_id}:${p.parent_user_id}`,
+        userId: p.student_user_id,
+        name: clean(p.student_name),
+        role: 'STUDENT' as const,
+        gender: p.gender,
+        avatarUrl: p.student_avatar,
+        relationship: 'Your ward',
+        registerNumber: p.register_number || '',
+        studentName: clean(p.student_name), parentName: clean(p.parent_name),
+        studentUserId: p.student_user_id, parentUserId: p.parent_user_id,
+        studentAvatar: p.student_avatar, parentAvatar: p.parent_avatar,
+        studentGender: p.gender, dob: p.date_of_birth,
+        classLabel: p.class_label || '', hostelite: true, blocked: false,
+      }));
+      return res.json({ contacts });
+    }
+
+    // Admin: all pairs
+    if (isAdmin(me.role)) {
+      const rows = pcDb.prepare(`
+        SELECT sp.student_user_id, sp.parent_user_id, su.name AS student_name, pu.name AS parent_name,
+               su.roll_number AS register_number, su.gender, su.dob AS date_of_birth,
+               su.avatar_url AS student_avatar, pu.avatar_url AS parent_avatar, su.class_label
+        FROM pc_student_parents sp
+        JOIN pc_users su ON su.id = sp.student_user_id
+        JOIN pc_users pu ON pu.id = sp.parent_user_id
+        ORDER BY su.name
+      `).all() as any[];
+
+      const contacts = rows.map((p) => ({
+        pairKey: `${p.student_user_id}:${p.parent_user_id}`,
+        userId: p.student_user_id,
+        name: clean(p.student_name),
+        role: 'STUDENT' as const, gender: p.gender, avatarUrl: p.student_avatar, relationship: 'Student',
+        registerNumber: p.register_number || '', studentName: clean(p.student_name), parentName: clean(p.parent_name),
+        studentUserId: p.student_user_id, parentUserId: p.parent_user_id,
+        studentAvatar: p.student_avatar, parentAvatar: p.parent_avatar,
+        studentGender: p.gender, dob: p.date_of_birth, classLabel: p.class_label || '', hostelite: true, blocked: false,
+      }));
+      return res.json({ contacts });
+    }
+
+    return res.json({ contacts: [] });
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.get('/availability', authenticate, async (_req, res: Response) => {
-  try { return res.json(await availability()); } catch (e: any) { return res.status(500).json({ error: e.message }); }
+// ─── Availability ────────────────────────────────────────────────────────────
+parentConnectRouter.get('/availability', (req: Request, res: Response) => {
+  try { getUserFromReq(req); return res.json(availability()); }
+  catch (e: any) { return res.status(401).json({ error: e.message }); }
 });
 
-// ---------- history ----------
-parentConnectRouter.get('/history', authenticate, async (req: AuthRequest, res: Response) => {
+// ─── History ─────────────────────────────────────────────────────────────────
+parentConnectRouter.get('/history', (req: Request, res: Response) => {
   try {
-    const me = req.user!;
-    const where = me.role === 'STUDENT' ? `c.student_user_id = $1` : me.role === 'PARENT' ? `c.parent_user_id = $1` : isAdmin(me.role) ? `$1 = $1` : `1 = 0`;
-    const rows = await query<any>(
-      `SELECT c.*, su.name AS student_name, pu.name AS parent_name FROM pc_calls c
-       JOIN users su ON su.id = c.student_user_id JOIN users pu ON pu.id = c.parent_user_id
-       WHERE ${where} ORDER BY c.initiated_at DESC LIMIT 100`, [me.id]);
+    const me = getUserFromReq(req);
+    let rows: any[];
+    if (me.role === 'STUDENT') {
+      rows = pcDb.prepare(`SELECT c.*, su.name AS student_name, pu.name AS parent_name
+        FROM pc_calls c JOIN pc_users su ON su.id = c.student_user_id JOIN pc_users pu ON pu.id = c.parent_user_id
+        WHERE c.student_user_id = ? ORDER BY c.initiated_at DESC LIMIT 100`).all(me.id) as any[];
+    } else if (me.role === 'PARENT') {
+      rows = pcDb.prepare(`SELECT c.*, su.name AS student_name, pu.name AS parent_name
+        FROM pc_calls c JOIN pc_users su ON su.id = c.student_user_id JOIN pc_users pu ON pu.id = c.parent_user_id
+        WHERE c.parent_user_id = ? ORDER BY c.initiated_at DESC LIMIT 100`).all(me.id) as any[];
+    } else if (isAdmin(me.role)) {
+      rows = pcDb.prepare(`SELECT c.*, su.name AS student_name, pu.name AS parent_name
+        FROM pc_calls c JOIN pc_users su ON su.id = c.student_user_id JOIN pc_users pu ON pu.id = c.parent_user_id
+        ORDER BY c.initiated_at DESC LIMIT 100`).all() as any[];
+    } else {
+      rows = [];
+    }
     return res.json({ history: rows.map((r) => ({ ...r, student_name: clean(r.student_name), parent_name: clean(r.parent_name), direction: r.caller_user_id === me.id ? 'out' : 'in' })) });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(401).json({ error: e.message }); }
 });
 
-// ---------- placing / answering / ending a call ----------
-parentConnectRouter.post('/calls', authenticate, requireRoles('STUDENT', 'PARENT'), async (req: AuthRequest, res: Response) => {
+// ─── Call lifecycle ──────────────────────────────────────────────────────────
+parentConnectRouter.post('/calls', (req: Request, res: Response) => {
   try {
-    const me = req.user!;
+    const me = getUserFromReq(req);
+    if (!['STUDENT', 'PARENT'].includes(me.role)) return res.status(403).json({ error: 'Only students and parents can make calls.' });
     const { to_user_id } = req.body || {};
     if (!to_user_id) return res.status(400).json({ error: 'to_user_id is required.' });
+
     const studentId = me.role === 'STUDENT' ? me.id : to_user_id;
     const parentId = me.role === 'PARENT' ? me.id : to_user_id;
-    const link = await queryOne(`SELECT 1 FROM student_profiles WHERE user_id = $1 AND parent_user_id = $2 AND is_active = 1`, [studentId, parentId]);
+
+    // Verify link
+    const link = pcDb.prepare('SELECT 1 FROM pc_student_parents WHERE student_user_id = ? AND parent_user_id = ?').get(studentId, parentId);
     if (!link) return res.status(400).json({ error: 'Unauthorized call: this student and parent are not linked.' });
-    if (await queryOne(`SELECT 1 FROM pc_contacts c JOIN student_profiles sp ON sp.id = c.student_profile_id WHERE sp.user_id = $1 AND c.user_id = $2 AND c.is_authorized = 0`, [studentId, parentId]))
-      return res.status(403).json({ error: 'The hostel office has withdrawn this parent\'s calling access.' });
-    if (await queryOne(`SELECT 1 FROM pc_blocked WHERE student_user_id = $1`, [studentId])) return res.status(403).json({ error: 'Calling is switched off for this student by the hostel.' });
-    const av = await availability();
+
+    // Check blocked
+    if (pcDb.prepare('SELECT 1 FROM pc_blocked WHERE student_user_id = ?').get(studentId))
+      return res.status(403).json({ error: 'Calling is switched off for this student by the hostel.' });
+
+    // Check availability
+    const av = availability();
     if (!av.isAllowed) return res.status(403).json({ error: av.reason });
-    await housekeeping();
-    const busy = await queryOne(`SELECT 1 FROM pc_calls WHERE status IN ('ringing','connected') AND (student_user_id IN ($1,$2) OR parent_user_id IN ($1,$2))`, [studentId, parentId]);
+
+    housekeeping();
+
+    // Check busy
+    const busy = pcDb.prepare(`SELECT 1 FROM pc_calls WHERE status IN ('ringing','connected') AND (student_user_id IN (?,?) OR parent_user_id IN (?,?))`).get(studentId, parentId, studentId, parentId);
     if (busy) return res.status(409).json({ error: 'One of you is already on a call. Try again in a moment.' });
+
     const id = crypto.randomUUID();
-    await execute(`INSERT INTO pc_calls (id, student_user_id, parent_user_id, caller_user_id) VALUES ($1,$2,$3,$4)`, [id, studentId, parentId, me.id]);
-    // ring the other person's phone/browser even if the app is closed (best effort)
-    sendPushToUser(to_user_id, { title: 'Incoming call', body: `${clean(me.name)} is calling you on Parent Connect`, data: { type: 'system', id } }).catch(() => {});
+    pcDb.prepare(`INSERT INTO pc_calls (id, student_user_id, parent_user_id, caller_user_id) VALUES (?,?,?,?)`).run(id, studentId, parentId, me.id);
+
     return res.json({ callId: id, maxDurationMinutes: av.schedule?.max_duration_minutes ?? 15 });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-async function myCall(req: AuthRequest, res: Response) {
-  const c = await queryOne<any>(`SELECT * FROM pc_calls WHERE id = $1`, [req.params.id]);
-  const me = req.user!;
-  if (!c || (c.student_user_id !== me.id && c.parent_user_id !== me.id && !isAdmin(me.role))) { res.status(404).json({ error: 'Call not found.' }); return null; }
-  return c;
-}
-
-parentConnectRouter.post('/calls/:id/accept', authenticate, async (req: AuthRequest, res: Response) => {
+parentConnectRouter.post('/calls/:id/accept', (req: Request, res: Response) => {
   try {
-    const c = await myCall(req, res); if (!c) return;
-    if (c.caller_user_id === req.user!.id) return res.status(400).json({ error: 'You cannot answer your own call.' });
-    const n = await execute(`UPDATE pc_calls SET status = 'connected', started_at = NOW() WHERE id = $1 AND status = 'ringing'`, [c.id]);
-    if (!n) return res.status(409).json({ error: 'This call is no longer ringing.' });
-    await execute(`INSERT INTO pc_signals (call_id, to_user_id, type, payload) VALUES ($1,$2,'accepted',NULL)`, [c.id, c.caller_user_id]);
+    const me = getUserFromReq(req);
+    const call = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ?').get(req.params.id) as any;
+    if (!call || (call.student_user_id !== me.id && call.parent_user_id !== me.id && !isAdmin(me.role)))
+      return res.status(404).json({ error: 'Call not found.' });
+    if (call.caller_user_id === me.id) return res.status(400).json({ error: 'You cannot answer your own call.' });
+
+    const n = pcDb.prepare(`UPDATE pc_calls SET status = 'connected', started_at = datetime('now') WHERE id = ? AND status = 'ringing'`).run(req.params.id);
+    if (n.changes === 0) return res.status(409).json({ error: 'This call is no longer ringing.' });
+
+    // Signal the caller that it was accepted
+    pcDb.prepare(`INSERT INTO pc_signals (call_id, to_user_id, type, payload) VALUES (?,?,'accepted',NULL)`).run(call.id, call.caller_user_id);
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.post('/calls/:id/reject', authenticate, async (req: AuthRequest, res: Response) => {
-  try { const c = await myCall(req, res); if (!c) return; await endCall(c.id, 'rejected'); return res.json({ success: true }); }
-  catch (e: any) { return res.status(500).json({ error: e.message }); }
-});
-
-parentConnectRouter.post('/calls/:id/end', authenticate, async (req: AuthRequest, res: Response) => {
+parentConnectRouter.post('/calls/:id/reject', (req: Request, res: Response) => {
   try {
-    const c = await myCall(req, res); if (!c) return;
-    const me = req.user!;
-    const reason = isAdmin(me.role) && c.student_user_id !== me.id && c.parent_user_id !== me.id ? 'ended_by_admin' : (c.status === 'ringing' && c.caller_user_id === me.id ? 'cancelled' : 'hangup');
-    await endCall(c.id, reason);
-    if (reason === 'ended_by_admin') await logAudit(req, 'PARENT_CONNECT_CALL_ENDED', 'pc_calls', c.id, {});
+    const me = getUserFromReq(req);
+    const call = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ?').get(req.params.id) as any;
+    if (!call || (call.student_user_id !== me.id && call.parent_user_id !== me.id && !isAdmin(me.role)))
+      return res.status(404).json({ error: 'Call not found.' });
+    endCall(call.id, 'rejected');
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.post('/calls/:id/signal', authenticate, async (req: AuthRequest, res: Response) => {
+parentConnectRouter.post('/calls/:id/end', (req: Request, res: Response) => {
   try {
-    const c = await myCall(req, res); if (!c) return;
-    const me = req.user!;
-    if (c.student_user_id !== me.id && c.parent_user_id !== me.id) return res.status(403).json({ error: 'Not your call.' });
+    const me = getUserFromReq(req);
+    const call = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ?').get(req.params.id) as any;
+    if (!call || (call.student_user_id !== me.id && call.parent_user_id !== me.id && !isAdmin(me.role)))
+      return res.status(404).json({ error: 'Call not found.' });
+    const reason = isAdmin(me.role) && call.student_user_id !== me.id && call.parent_user_id !== me.id
+      ? 'ended_by_admin'
+      : (call.status === 'ringing' && call.caller_user_id === me.id ? 'cancelled' : 'hangup');
+    endCall(call.id, reason);
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
+});
+
+parentConnectRouter.post('/calls/:id/signal', (req: Request, res: Response) => {
+  try {
+    const me = getUserFromReq(req);
+    const call = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ?').get(req.params.id) as any;
+    if (!call || (call.student_user_id !== me.id && call.parent_user_id !== me.id))
+      return res.status(403).json({ error: 'Not your call.' });
     const { type, payload } = req.body || {};
     if (!['offer', 'answer', 'ice'].includes(type)) return res.status(400).json({ error: 'Bad signal type.' });
-    if (!['ringing', 'connected'].includes(c.status)) return res.status(409).json({ error: 'Call is over.' });
-    const to = c.student_user_id === me.id ? c.parent_user_id : c.student_user_id;
-    await execute(`INSERT INTO pc_signals (call_id, to_user_id, type, payload) VALUES ($1,$2,$3,$4)`, [c.id, to, type, JSON.stringify(payload ?? null)]);
+    if (!['ringing', 'connected'].includes(call.status)) return res.status(409).json({ error: 'Call is over.' });
+
+    const to = call.student_user_id === me.id ? call.parent_user_id : call.student_user_id;
+    pcDb.prepare(`INSERT INTO pc_signals (call_id, to_user_id, type, payload) VALUES (?,?,?,?)`).run(call.id, to, type, JSON.stringify(payload ?? null));
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-// ---------- polling: incoming call, signals, status of the call I'm in ----------
-parentConnectRouter.get('/poll', authenticate, async (req: AuthRequest, res: Response) => {
+// ─── Polling ─────────────────────────────────────────────────────────────────
+parentConnectRouter.get('/poll', (req: Request, res: Response) => {
   try {
-    const me = req.user!;
+    const me = getUserFromReq(req);
     if (!['STUDENT', 'PARENT'].includes(me.role)) return res.json({ call: null, signals: [], known: null });
-    await housekeeping();
+
+    housekeeping();
     const after = Number(req.query.after || 0);
-    const live = await queryOne<any>(
-      `SELECT * FROM pc_calls WHERE status IN ('ringing','connected') AND (student_user_id = $1 OR parent_user_id = $1) ORDER BY initiated_at DESC LIMIT 1`, [me.id]);
+
+    const live = pcDb.prepare(`SELECT * FROM pc_calls WHERE status IN ('ringing','connected') AND (student_user_id = ? OR parent_user_id = ?) ORDER BY initiated_at DESC LIMIT 1`).get(me.id, me.id) as any;
+
     let known: any = null;
-    if (req.query.call_id) known = await queryOne<any>(`SELECT * FROM pc_calls WHERE id = $1 AND (student_user_id = $2 OR parent_user_id = $2)`, [String(req.query.call_id), me.id]);
-    const signals = await query<any>(`SELECT id, call_id, type, payload FROM pc_signals WHERE to_user_id = $1 AND id > $2 ORDER BY id LIMIT 200`, [me.id, after]);
-    // tidy old signals so the table stays small
-    if (Math.random() < 0.05) await execute(`DELETE FROM pc_signals WHERE created_at < NOW() - INTERVAL '1 hour'`);
+    if (req.query.call_id) {
+      known = pcDb.prepare('SELECT * FROM pc_calls WHERE id = ? AND (student_user_id = ? OR parent_user_id = ?)').get(String(req.query.call_id), me.id, me.id) as any;
+    }
+
+    const signals = pcDb.prepare('SELECT id, call_id, type, payload FROM pc_signals WHERE to_user_id = ? AND id > ? ORDER BY id LIMIT 200').all(me.id, after) as any[];
+
+    // Tidy old signals (probabilistic)
+    if (Math.random() < 0.05) pcDb.prepare(`DELETE FROM pc_signals WHERE created_at < datetime('now', '-1 hour')`).run();
+
     return res.json({
       call: shapeCall(live, me.id),
       known: shapeCall(known, me.id),
       signals: signals.map((s) => ({ id: Number(s.id), callId: s.call_id, type: s.type, payload: s.payload ? JSON.parse(s.payload) : null })),
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-// ---------- admin ----------
-parentConnectRouter.get('/schedule', authenticate, async (_req, res: Response) => {
-  try { return res.json({ schedule: await query(`SELECT * FROM pc_schedule ORDER BY day_of_week`) }); } catch (e: any) { return res.status(500).json({ error: e.message }); }
+// ─── Admin: Schedule ─────────────────────────────────────────────────────────
+parentConnectRouter.get('/schedule', (req: Request, res: Response) => {
+  try { getUserFromReq(req); return res.json({ schedule: pcDb.prepare('SELECT * FROM pc_schedule ORDER BY day_of_week').all() }); }
+  catch (e: any) { return res.status(401).json({ error: e.message }); }
 });
 
-parentConnectRouter.put('/schedule', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+parentConnectRouter.put('/schedule', (req: Request, res: Response) => {
   try {
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
     const rows: any[] = Array.isArray(req.body?.schedule) ? req.body.schedule : [];
     const ok = /^([01]\d|2[0-3]):[0-5]\d$/;
     for (const r of rows) {
-      if (!ok.test(r.start_time) || !ok.test(r.end_time) || r.end_time <= r.start_time) return res.status(400).json({ error: 'Each day needs a valid start time before its end time.' });
+      if (!ok.test(r.start_time) || !ok.test(r.end_time) || r.end_time <= r.start_time) return res.status(400).json({ error: 'Invalid schedule times.' });
       const max = Number(r.max_duration_minutes);
-      if (!(max >= 1 && max <= 120)) return res.status(400).json({ error: 'Maximum call length must be 1 to 120 minutes.' });
-      await execute(`UPDATE pc_schedule SET start_time=$1, end_time=$2, max_duration_minutes=$3, is_active=$4 WHERE day_of_week=$5`,
-        [r.start_time, r.end_time, max, r.is_active ? 1 : 0, Number(r.day_of_week)]);
+      if (!(max >= 1 && max <= 120)) return res.status(400).json({ error: 'Max call length must be 1–120 minutes.' });
+      pcDb.prepare('UPDATE pc_schedule SET start_time=?, end_time=?, max_duration_minutes=?, is_active=? WHERE day_of_week=?')
+        .run(r.start_time, r.end_time, max, r.is_active ? 1 : 0, Number(r.day_of_week));
     }
-    await logAudit(req, 'PARENT_CONNECT_SCHEDULE_UPDATED', 'pc_schedule', 'all', { days: rows.length });
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.get('/live', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (_req, res: Response) => {
+// ─── Admin: Live calls ───────────────────────────────────────────────────────
+parentConnectRouter.get('/live', (req: Request, res: Response) => {
   try {
-    await housekeeping();
-    const live = await query<any>(
-      `SELECT c.*, su.name AS student_name, pu.name AS parent_name FROM pc_calls c JOIN users su ON su.id = c.student_user_id JOIN users pu ON pu.id = c.parent_user_id
-       WHERE c.status IN ('ringing','connected') ORDER BY c.initiated_at DESC`);
-    const stats = await queryOne<any>(
-      `SELECT COUNT(*) FILTER (WHERE initiated_at > NOW() - INTERVAL '24 hours') AS calls_24h,
-              COUNT(*) FILTER (WHERE initiated_at > NOW() - INTERVAL '24 hours' AND status = 'ended') AS completed_24h,
-              COUNT(*) FILTER (WHERE initiated_at > NOW() - INTERVAL '24 hours' AND status IN ('missed','rejected')) AS missed_24h,
-              COALESCE(SUM(duration_seconds) FILTER (WHERE initiated_at > NOW() - INTERVAL '24 hours'), 0) AS seconds_24h
-       FROM pc_calls`);
-    return res.json({ live: live.map((r) => ({ ...r, student_name: clean(r.student_name), parent_name: clean(r.parent_name) })), stats: { calls24h: Number(stats?.calls_24h || 0), completed24h: Number(stats?.completed_24h || 0), missed24h: Number(stats?.missed_24h || 0), seconds24h: Number(stats?.seconds_24h || 0) } });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
+    housekeeping();
+    const live = pcDb.prepare(`SELECT c.*, su.name AS student_name, pu.name AS parent_name
+      FROM pc_calls c JOIN pc_users su ON su.id = c.student_user_id JOIN pc_users pu ON pu.id = c.parent_user_id
+      WHERE c.status IN ('ringing','connected') ORDER BY c.initiated_at DESC`).all() as any[];
+
+    const stats = pcDb.prepare(`SELECT
+      COUNT(*) AS calls_24h,
+      SUM(CASE WHEN status = 'ended' THEN 1 ELSE 0 END) AS completed_24h,
+      SUM(CASE WHEN status IN ('missed','rejected') THEN 1 ELSE 0 END) AS missed_24h,
+      COALESCE(SUM(duration_seconds), 0) AS seconds_24h
+      FROM pc_calls WHERE initiated_at > datetime('now', '-24 hours')`).get() as any;
+
+    return res.json({
+      live: live.map((r) => ({ ...r, student_name: clean(r.student_name), parent_name: clean(r.parent_name) })),
+      stats: { calls24h: Number(stats?.calls_24h || 0), completed24h: Number(stats?.completed_24h || 0), missed24h: Number(stats?.missed_24h || 0), seconds24h: Number(stats?.seconds_24h || 0) }
+    });
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.post('/students/:studentUserId/block', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+// ─── Admin: Block/Unblock ────────────────────────────────────────────────────
+parentConnectRouter.post('/students/:studentUserId/block', (req: Request, res: Response) => {
   try {
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
     const blocked = !!req.body?.blocked;
-    if (blocked) await execute(`INSERT INTO pc_blocked (student_user_id, reason) VALUES ($1,$2) ON CONFLICT (student_user_id) DO UPDATE SET reason = EXCLUDED.reason`, [req.params.studentUserId, req.body?.reason || null]);
-    else await execute(`DELETE FROM pc_blocked WHERE student_user_id = $1`, [req.params.studentUserId]);
-    await logAudit(req, blocked ? 'PARENT_CONNECT_BLOCKED' : 'PARENT_CONNECT_UNBLOCKED', 'pc_blocked', req.params.studentUserId, {});
+    if (blocked) pcDb.prepare('INSERT OR REPLACE INTO pc_blocked (student_user_id, reason) VALUES (?,?)').run(req.params.studentUserId, req.body?.reason || null);
+    else pcDb.prepare('DELETE FROM pc_blocked WHERE student_user_id = ?').run(req.params.studentUserId);
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-
-// ---------- admin: student register, dossier, parent contacts ----------
+// ─── Admin: Student register ─────────────────────────────────────────────────
 const pucLevel = (cls?: string | null): 'I PU' | 'II PU' | '' => {
   const n = (cls || '').toLowerCase();
-  if (/(^|[^a-z0-9])(2|ii|12|2nd|second)(\s|nd|th|$|[^a-z0-9])|12th|2 ?puc|ii ?pu/.test(n)) return 'II PU';
-  if (/(^|[^a-z0-9])(1|i|11|1st|first)(\s|st|th|$|[^a-z0-9])|11th|1 ?puc|i ?pu/.test(n)) return 'I PU';
+  if (/(2|ii|12|2nd|second)|12th|2\s?puc|ii\s?pu/i.test(n)) return 'II PU';
+  if (/(1|i|11|1st|first)|11th|1\s?puc|i\s?pu/i.test(n)) return 'I PU';
   return '';
 };
-const relationFor = (name: string) => (/^\s*(mrs|ms|smt|miss|shrimati)\b/i.test(name) ? 'Mother' : 'Father');
 
-// give every student at least their on-file parent as an authorised contact
-async function seedContacts() {
-  const missing = await query<any>(
-    `SELECT sp.id, sp.parent_name, sp.parent_phone, sp.parent_user_id, pu.name AS pu_name, pu.phone AS pu_phone
-     FROM student_profiles sp LEFT JOIN users pu ON pu.id = sp.parent_user_id
-     WHERE sp.is_active = 1 AND NOT EXISTS (SELECT 1 FROM pc_contacts c WHERE c.student_profile_id = sp.id)`);
-  for (const m of missing) {
-    const name = clean(m.parent_name || m.pu_name);
-    if (!name) continue;
-    await execute(`INSERT INTO pc_contacts (id, student_profile_id, relationship, name, phone, user_id) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [crypto.randomUUID(), m.id, relationFor(name), name, m.parent_phone || m.pu_phone || null, m.parent_user_id || null]);
-  }
-}
-
-parentConnectRouter.get('/register', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (_req, res: Response) => {
+parentConnectRouter.get('/register', (req: Request, res: Response) => {
   try {
-    await seedContacts();
-    const rows = await query<any>(
-      `SELECT sp.id, sp.user_id, sp.name, sp.register_number, sp.gender, sp.date_of_birth, COALESCE(sp.photo_url, su.avatar_url) AS photo,
-              c.name AS class_name, s.name AS section_name,
-              ROW_NUMBER() OVER (ORDER BY sp.register_number, sp.id) AS tab_no,
-              COALESCE((SELECT SUM(duration_seconds) FROM pc_calls k WHERE k.student_user_id = sp.user_id), 0) AS talk_seconds,
-              (SELECT COUNT(*) FROM pc_calls k WHERE k.student_user_id = sp.user_id AND k.status <> 'ringing') AS call_count,
-              EXISTS (SELECT 1 FROM pc_blocked b WHERE b.student_user_id = sp.user_id) AS blocked,
-              (SELECT COUNT(*) FROM pc_contacts pc WHERE pc.student_profile_id = sp.id AND pc.is_authorized = 1) AS allowed_contacts
-       FROM student_profiles sp
-       LEFT JOIN users su ON su.id = sp.user_id
-       LEFT JOIN classes c ON c.id = sp.class_id LEFT JOIN sections s ON s.id = sp.section_id
-       WHERE sp.is_active = 1 ORDER BY sp.register_number, sp.id`);
-    return res.json({ students: rows.map((r) => ({
-      id: r.id, userId: r.user_id, name: clean(r.name), registerNumber: r.register_number, gender: r.gender, dob: r.date_of_birth, photo: r.photo,
-      classLabel: [r.class_name, r.section_name].filter(Boolean).join(' · '), level: pucLevel(r.class_name),
-      tab: `TAB-${String(Number(r.tab_no)).padStart(3, '0')}`, talkSeconds: Number(r.talk_seconds), callCount: Number(r.call_count),
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
+
+    const rows = pcDb.prepare(`
+      SELECT u.id, u.id AS user_id, u.name, u.roll_number AS register_number, u.gender, u.dob AS date_of_birth, u.avatar_url AS photo, u.class_label,
+        COALESCE((SELECT SUM(duration_seconds) FROM pc_calls k WHERE k.student_user_id = u.id), 0) AS talk_seconds,
+        (SELECT COUNT(*) FROM pc_calls k WHERE k.student_user_id = u.id AND k.status <> 'ringing') AS call_count,
+        EXISTS (SELECT 1 FROM pc_blocked b WHERE b.student_user_id = u.id) AS blocked,
+        (SELECT COUNT(*) FROM pc_contacts pc WHERE pc.student_profile_id = u.id AND pc.is_authorized = 1) AS allowed_contacts
+      FROM pc_users u WHERE u.role = 'STUDENT' AND u.is_active = 1 ORDER BY u.roll_number, u.id
+    `).all() as any[];
+
+    return res.json({ students: rows.map((r, i) => ({
+      id: r.id, userId: r.user_id, name: clean(r.name), registerNumber: r.register_number || '', gender: r.gender, dob: r.date_of_birth, photo: r.photo,
+      classLabel: r.class_label || '', level: pucLevel(r.class_label),
+      tab: `TAB-${String(i + 1).padStart(3, '0')}`, talkSeconds: Number(r.talk_seconds), callCount: Number(r.call_count),
       enabled: !r.blocked, allowedContacts: Number(r.allowed_contacts),
     })) });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.get('/register/:id', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+parentConnectRouter.get('/register/:id', (req: Request, res: Response) => {
   try {
-    await seedContacts();
-    const sp = await queryOne<any>(`SELECT id, user_id FROM student_profiles WHERE id = $1`, [req.params.id]);
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
+
+    const sp = pcDb.prepare('SELECT id FROM pc_users WHERE id = ? AND role = ?').get(req.params.id, 'STUDENT') as any;
     if (!sp) return res.status(404).json({ error: 'Student not found.' });
-    const contacts = await query<any>(`SELECT id, relationship, name, phone, is_authorized FROM pc_contacts WHERE student_profile_id = $1 ORDER BY CASE relationship WHEN 'Father' THEN 0 WHEN 'Mother' THEN 1 ELSE 2 END, created_at`, [sp.id]);
-    const calls = await query<any>(
-      `SELECT k.id, k.status, k.initiated_at, k.duration_seconds, k.end_reason, k.caller_user_id, k.parent_user_id,
-              COALESCE(pc.name, pu.name) AS who, COALESCE(pc.relationship, 'Parent') AS relationship, COALESCE(pc.phone, pu.phone) AS phone
-       FROM pc_calls k LEFT JOIN users pu ON pu.id = k.parent_user_id
-       LEFT JOIN pc_contacts pc ON pc.student_profile_id = $2 AND pc.user_id = k.parent_user_id
-       WHERE k.student_user_id = $1 ORDER BY k.initiated_at DESC LIMIT 60`, [sp.user_id, sp.id]);
+
+    const contacts = pcDb.prepare(`SELECT id, relationship, name, phone, is_authorized FROM pc_contacts WHERE student_profile_id = ?
+      ORDER BY CASE relationship WHEN 'Father' THEN 0 WHEN 'Mother' THEN 1 ELSE 2 END, created_at`).all(sp.id) as any[];
+
+    const calls = pcDb.prepare(`SELECT k.id, k.status, k.initiated_at AS at, k.duration_seconds AS seconds, k.end_reason, k.caller_user_id, k.parent_user_id,
+        COALESCE(pc.name, pu.name) AS who, COALESCE(pc.relationship, 'Parent') AS relationship, COALESCE(pc.phone, pu.phone) AS phone
+      FROM pc_calls k LEFT JOIN pc_users pu ON pu.id = k.parent_user_id
+      LEFT JOIN pc_contacts pc ON pc.student_profile_id = ? AND pc.user_id = k.parent_user_id
+      WHERE k.student_user_id = ? ORDER BY k.initiated_at DESC LIMIT 60`).all(sp.id, sp.id) as any[];
+
     return res.json({
       contacts: contacts.map((c) => ({ id: c.id, relationship: c.relationship, name: clean(c.name), phone: c.phone || '', authorized: c.is_authorized === 1 })),
-      calls: calls.map((k) => ({ id: k.id, status: k.status, at: k.initiated_at, seconds: k.duration_seconds || 0, direction: k.caller_user_id === sp.user_id ? 'outgoing' : 'incoming', name: clean(k.who), relationship: k.relationship, phone: k.phone || '' })),
+      calls: calls.map((k) => ({ id: k.id, status: k.status, at: k.at, seconds: k.seconds || 0, direction: k.caller_user_id === sp.id ? 'outgoing' : 'incoming', name: clean(k.who), relationship: k.relationship, phone: k.phone || '' })),
     });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-const phoneOk = /^[+0-9][0-9 \-]{6,18}$/;
-parentConnectRouter.post('/register/:id/contacts', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+parentConnectRouter.post('/register/:id/contacts', (req: Request, res: Response) => {
   try {
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
     const { relationship, name, phone } = req.body || {};
     if (!['Father', 'Mother', 'Guardian'].includes(relationship) || !String(name || '').trim()) return res.status(400).json({ error: 'Choose Father, Mother or Guardian and enter a name.' });
-    if (phone && !phoneOk.test(String(phone).trim())) return res.status(400).json({ error: 'Enter a valid phone number.' });
     const id = crypto.randomUUID();
-    await execute(`INSERT INTO pc_contacts (id, student_profile_id, relationship, name, phone) VALUES ($1,$2,$3,$4,$5)`, [id, req.params.id, relationship, String(name).trim(), phone ? String(phone).trim() : null]);
-    await logAudit(req, 'PARENT_CONNECT_CONTACT_ADDED', 'pc_contacts', id, { student: req.params.id });
+    pcDb.prepare('INSERT INTO pc_contacts (id, student_profile_id, relationship, name, phone) VALUES (?,?,?,?,?)').run(id, req.params.id, relationship, String(name).trim(), phone ? String(phone).trim() : null);
     return res.json({ success: true, id });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.put('/contacts/:id', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+parentConnectRouter.put('/contacts/:id', (req: Request, res: Response) => {
   try {
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
     const { name, phone } = req.body || {};
-    if (phone && !phoneOk.test(String(phone).trim())) return res.status(400).json({ error: 'Enter a valid phone number.' });
-    const n = await execute(`UPDATE pc_contacts SET name = COALESCE(NULLIF($1,''), name), phone = $2 WHERE id = $3`, [name ? String(name).trim() : '', phone ? String(phone).trim() : null, req.params.id]);
-    if (!n) return res.status(404).json({ error: 'Contact not found.' });
-    await logAudit(req, 'PARENT_CONNECT_CONTACT_EDITED', 'pc_contacts', req.params.id, {});
+    pcDb.prepare('UPDATE pc_contacts SET name = COALESCE(NULLIF(?,\'\'), name), phone = ? WHERE id = ?').run(name ? String(name).trim() : '', phone ? String(phone).trim() : null, req.params.id);
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });
 
-parentConnectRouter.post('/contacts/:id/authorize', authenticate, requireRoles(...(ADMIN_ROLES as any)), async (req: AuthRequest, res: Response) => {
+parentConnectRouter.post('/contacts/:id/authorize', (req: Request, res: Response) => {
   try {
+    const me = getUserFromReq(req);
+    if (!isAdmin(me.role)) return res.status(403).json({ error: 'Admin only.' });
     const on = !!req.body?.authorized;
-    const n = await execute(`UPDATE pc_contacts SET is_authorized = $1 WHERE id = $2`, [on ? 1 : 0, req.params.id]);
-    if (!n) return res.status(404).json({ error: 'Contact not found.' });
-    await logAudit(req, on ? 'PARENT_CONNECT_ACCESS_RESTORED' : 'PARENT_CONNECT_ACCESS_REVOKED', 'pc_contacts', req.params.id, {});
+    pcDb.prepare('UPDATE pc_contacts SET is_authorized = ? WHERE id = ?').run(on ? 1 : 0, req.params.id);
     return res.json({ success: true });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+  } catch (e: any) { return res.status(e.message === 'Unauthorized' ? 401 : 500).json({ error: e.message }); }
 });

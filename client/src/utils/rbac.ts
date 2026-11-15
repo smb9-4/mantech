@@ -28,7 +28,8 @@ import {
   IconDiscipline,
   IconIssues,
   IconNotifications,
-  IconProfile
+  IconProfile,
+  IconTabManagement
 } from '../components/ModuleIcons';
 import { UserRole } from '../context/AuthContext';
 
@@ -39,6 +40,7 @@ export interface NavItemConfig {
   targetTab: string;
   description?: string;
   isOtherTool?: boolean;
+  iconSrc?: string;
 }
 
 export function getRoleNavigation(role: UserRole | string | undefined): {
@@ -113,16 +115,39 @@ export function getRoleNavigation(role: UserRole | string | undefined): {
         ]
       };
 
+    case 'STUDENT_TAB':
+      return {
+        roleTitle: 'Student Academic Portal (Tab View)',
+        roleSubtitle: 'Student tablet dashboard, live examination center, performance reports, lecture notes and verified timetable.',
+        menuItems: [
+          { id: 'dashboard', label: 'Dashboard', icon: IconDashboard, iconSrc: '/sidebar-icons/dashboard.png', targetTab: 'dashboard-home', description: 'Student Workspace Overview' },
+          { id: 'announcements', label: 'Announcements', icon: IconNoticeboard, iconSrc: '/student-section-icons/announcements.png', targetTab: 'announcements', description: 'Official circulars from Principal & faculty' },
+          { id: 'tests', label: 'Exams', icon: IconTests, iconSrc: '/student-section-icons/exams.png', targetTab: 'tests', description: 'Live college tests & competitive mock series' },
+          { id: 'notes', label: 'Notes', icon: IconBoardMarks, iconSrc: '/student-section-icons/notes.png', targetTab: 'notes', description: 'Curated subject notes & unit guides' },
+          { id: 'materials', label: 'Materials', icon: IconClasses, iconSrc: '/student-section-icons/materials.png', targetTab: 'materials', description: 'Video lectures & chapter worksheets' },
+          { id: 'reports', label: 'Results', icon: IconReports, iconSrc: '/student-section-icons/results.png', targetTab: 'reports', description: 'Scorecards, performance analytics & review' },
+          { id: 'timetable', label: 'Timetable', icon: IconTimetable, iconSrc: '/student-section-icons/timetable.png', targetTab: 'timetable', description: 'Daily lectures, periods & classrooms' },
+          { id: 'college-calendar', label: 'Calendar', icon: IconCalendar, iconSrc: '/student-section-icons/calendar.png', targetTab: 'college-calendar', description: 'Monthly exam & event schedule' },
+          { id: 'complaints', label: 'Complaints', icon: IconIssues, iconSrc: '/student-section-icons/complaints.png', targetTab: 'complaints', description: 'Grievance redressal cell' },
+          { id: 'attendance', label: 'Attendance', icon: IconAttendance, iconSrc: '/student-section-icons/attendance.png', targetTab: 'attendance', description: 'Subject-wise class attendance log' },
+          { id: 'parent-connect', label: 'Parent Connect', icon: IconParentConnect, iconSrc: '/student-section-icons/parent-connect.png', targetTab: 'parent-connect', description: 'Student-parent calling gateway' }
+        ],
+        otherTools: []
+      };
+
     case 'PARENT':
       return {
         roleTitle: 'Parent & Guardian Portal',
         roleSubtitle: 'Monitor your ward\'s academic progress, daily lecture attendance, report cards and approve outpass requests.',
         menuItems: [
           { id: 'dashboard', label: 'Ward Overview', icon: IconDashboard, targetTab: 'dashboard-home', description: 'Academic score, attendance & notices' },
+          { id: 'tests', label: 'Results', icon: IconReports, targetTab: 'tests', description: "Ward's term exam results, test scores & subject breakdown" },
+          { id: 'timetable', label: 'Time Table', icon: IconTimetable, targetTab: 'timetable', description: "Ward's weekly lecture timetable & class schedule" },
+          { id: 'college-calendar', label: 'Calendar', icon: IconCalendar, targetTab: 'college-calendar', description: 'College academic calendar, exams, holidays & events' },
+          { id: 'sms', label: 'SMS', icon: IconSms, targetTab: 'sms', description: 'SMS updates regarding parent meetings, results & official notices' },
           { id: 'attendance', label: 'Daily Attendance', icon: IconAttendance, targetTab: 'attendance', description: 'Subject-wise class attendance log' },
-          { id: 'gate-pass', label: 'Outpass Approvals (OTP)', icon: IconGatePass, targetTab: 'gate-pass', description: 'Verify pickup person & approve outpass' },
-          { id: 'exam-seating', label: 'Exam Seating', icon: IconExamManagement, targetTab: 'exam-seating', description: "Your ward's room, floor and seat for upcoming exams" },
           { id: 'parent-connect', label: 'Parent Connect', icon: IconParentConnect, targetTab: 'parent-connect', description: 'Voice call your ward during calling hours' },
+          { id: 'gate-pass', label: 'Outpass Approvals (OTP)', icon: IconGatePass, targetTab: 'gate-pass', description: 'Verify pickup person & approve outpass' },
           { id: 'fee', label: 'Fee & Dues', icon: IconFee, targetTab: 'fee', description: 'Fee receipts & payment breakdown' },
           { id: 'noticeboard', label: 'College Notices', icon: IconNoticeboard, targetTab: 'noticeboard', description: 'Circulars from Principal office' }
         ],
@@ -248,6 +273,7 @@ export function getRoleNavigation(role: UserRole | string | undefined): {
           { id: 'admission', label: 'Admission', icon: IconAdmission, targetTab: 'admission' },
           { id: 'leaderboard', label: 'Leaderboard', icon: IconLeaderboard, targetTab: 'leaderboard' },
           { id: 'parent-connect', label: 'Parent Connect', icon: IconParentConnect, targetTab: 'parent-connect' },
+          { id: 'tab-management', label: 'Tab Management', icon: IconTabManagement, targetTab: 'tab-management', description: 'Student tablet fleet control, kiosk lockdown & exam monitoring' },
           { id: 'settings', label: 'Settings', icon: IconSettings, targetTab: 'settings' },
         ],
         otherTools: []

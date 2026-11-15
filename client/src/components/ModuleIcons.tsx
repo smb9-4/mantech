@@ -492,3 +492,28 @@ export const IconParentConnect: React.FC<IconProps> = ({ className = 'w-12 h-12'
     <path d="M30 18c3 0 6 1 8 3M30 12c6 0 11 3 14 7" stroke="#C28535" strokeWidth="2.5" strokeLinecap="round" />
   </svg>
 );
+
+// Tab Management Icon (Tablet with Gear)
+export const IconTabManagement: React.FC<IconProps> = ({ className = 'w-12 h-12', size }) => (
+  <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} width={size} height={size}>
+    {/* Tablet body */}
+    <rect x="10" y="6" width="36" height="52" rx="7" fill="#1D72FE" />
+    <rect x="14" y="13" width="28" height="38" rx="3" fill="#FFFFFF" />
+    <rect x="24" y="9" width="8" height="2" rx="1" fill="#FFFFFF" />
+    <circle cx="28" cy="54" r="2.5" fill="#FFFFFF" />
+    {/* Gear on the right */}
+    <g transform="translate(42, 34)">
+      <circle cx="0" cy="0" r="14" fill="#0D357A" />
+      <circle cx="0" cy="0" r="5.5" fill="#FFFFFF" />
+      {/* Cog teeth */}
+      <rect x="-3" y="-17" width="6" height="4" rx="1.5" fill="#0D357A" />
+      <rect x="-3" y="13" width="6" height="4" rx="1.5" fill="#0D357A" />
+      <rect x="-17" y="-3" width="4" height="6" rx="1.5" fill="#0D357A" />
+      <rect x="13" y="-3" width="4" height="6" rx="1.5" fill="#0D357A" />
+      <rect x="-12.5" y="-12.5" width="5" height="5" rx="1.2" transform="rotate(45 -10 -10)" fill="#0D357A" />
+      <rect x="8.5" y="8.5" width="5" height="5" rx="1.2" transform="rotate(45 11 11)" fill="#0D357A" />
+      <rect x="-12.5" y="8.5" width="5" height="5" rx="1.2" transform="rotate(-45 -10 11)" fill="#0D357A" />
+      <rect x="8.5" y="-12.5" width="5" height="5" rx="1.2" transform="rotate(-45 11 -10)" fill="#0D357A" />
+    </g>
+  </svg>
+);

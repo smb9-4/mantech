@@ -13,6 +13,7 @@ export type UserRole =
   | 'WARDEN'
   | 'HEAD_WARDEN'
   | 'STUDENT'
+  | 'STUDENT_TAB'
   | 'PARENT'
   | 'EXAM_DEPARTMENT';
 
@@ -162,8 +163,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try { localStorage.removeItem('mt-demo-user'); } catch { /* ignore */ }
     } catch (err) {
       // Fallback demo login if network/backend is waking up
-      const roleMap: Record<string, { role: UserRole; name: string }> = {
-        'admin@sirmv.edu.in': { role: 'ADMIN', name: 'Campus Administrator' },
+      const roleMap: Record<string, { role: UserRole; name: string; id?: string }> = {
+        'admin@sirmv.edu.in': { role: 'ADMIN', name: 'Campus Administrator', id: 'adm-smg-001' },
+        'admin.demo@college.test': { role: 'ADMIN', name: 'Campus Administrator', id: 'adm-smg-001' },
         'principal@sirmv.edu.in': { role: 'PRINCIPAL', name: 'College Principal' },
         'hod.physics@sirmv.edu.in': { role: 'HOD', name: 'HOD - Department of Physics' },
         'lecturer@sirmv.edu.in': { role: 'TEACHER', name: 'Senior Faculty Lecturer' },
@@ -171,15 +173,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'staff@sirmv.edu.in': { role: 'NON_TEACHING_STAFF', name: 'Administrative Staff' },
         'warden@sirmv.edu.in': { role: 'WARDEN', name: 'Hostel Block Warden' },
         'headwarden@sirmv.edu.in': { role: 'HEAD_WARDEN', name: 'Chief Warden' },
-        'student@sirmv.edu.in': { role: 'STUDENT', name: 'Student Portal Account' },
-        'parent@sirmv.edu.in': { role: 'PARENT', name: 'Parent Portal Account' },
+        'student@sirmv.edu.in': { role: 'STUDENT', name: 'Bhoomika Naik', id: 'stu-smg-001' },
+        'student.demo@college.test': { role: 'STUDENT', name: 'Bhoomika Naik', id: 'stu-smg-001' },
+        'student.tab@sirmv.edu.in': { role: 'STUDENT_TAB', name: 'Bhoomika Naik', id: 'stu-tab-001' },
+        'parent@sirmv.edu.in': { role: 'PARENT', name: 'Mr. Naveen Naik', id: 'par-smg-001' },
+        'parent.demo@college.test': { role: 'PARENT', name: 'Mr. Naveen Naik', id: 'par-smg-001' },
         'examdept@sirmv.edu.in': { role: 'EXAM_DEPARTMENT', name: 'Exam Department Officer' }
       };
 
       const match = roleMap[identifier] || roleMap[`${identifier}@sirmv.edu.in`];
       if (match && (password === '123456' || password === 'Demo@12345')) {
         const fallbackUser: User = {
-          id: 'usr-local-' + identifier.replace(/[^a-z0-9]/gi, ''),
+          id: match.id || ('usr-local-' + identifier.replace(/[^a-z0-9]/gi, '')),
           username: identifier.split('@')[0],
           role: match.role,
           name: match.name,
@@ -223,7 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <AuthContext.Provider
       value={{
-        user: user && user.role !== 'STUDENT' && user.role !== 'PARENT' ? (() => { const st = accountStaff(user.email, user.role); return { ...user, name: st?.name || user.name, staffId: st?.id }; })() : user,
+        user: user && user.role !== 'STUDENT' && user.role !== 'STUDENT_TAB' && user.role !== 'PARENT' ? (() => { const st = accountStaff(user.email, user.role); return { ...user, name: st?.name || user.name, staffId: st?.id }; })() : user,
         branches,
         currentBranch,
         isLoading,

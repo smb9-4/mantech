@@ -132,6 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onMenuClick, onNavigate }) => {
     { email: 'warden@sirmv.edu.in', label: 'Hostel Warden', role: 'WARDEN', color: 'bg-teal-100 text-teal-900' },
     { email: 'headwarden@sirmv.edu.in', label: 'Chief Warden', role: 'HEAD_WARDEN', color: 'bg-emerald-100 text-emerald-900' },
     { email: 'student@sirmv.edu.in', label: 'Student Account', role: 'STUDENT', color: 'bg-cyan-100 text-cyan-900' },
+    { email: 'student.tab@sirmv.edu.in', label: 'Student (Tab View)', role: 'STUDENT_TAB', color: 'bg-emerald-100 text-emerald-900' },
     { email: 'parent@sirmv.edu.in', label: 'Parent Portal', role: 'PARENT', color: 'bg-pink-100 text-pink-900' },
     { email: 'examdept@sirmv.edu.in', label: 'Exam Department', role: 'EXAM_DEPARTMENT', color: 'bg-violet-100 text-violet-900' }
   ];

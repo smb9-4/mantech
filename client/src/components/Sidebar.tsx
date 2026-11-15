@@ -97,7 +97,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
         <div className="py-2 px-2 flex-1 overflow-y-auto space-y-1">
           <nav className="space-y-1">
             {menuItems.map((item, i) =>
-              renderItem(item, activeTab === item.targetTab || (item.id === 'dashboard' && activeTab === 'dashboard-home'), i)
+              renderItem(item, activeTab === item.targetTab || (item.id === 'dashboard' && (activeTab === 'dashboard-home' || activeTab === 'dashboard')), i)
             )}
           </nav>
 

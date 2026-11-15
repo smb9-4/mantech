@@ -54,12 +54,15 @@ const StudentAttendanceView = lazyWithRetry(() => import('./pages/StudentAttenda
 const StudentTimetableView = lazyWithRetry(() => import('./pages/StudentTimetableView').then((m) => ({ default: m.StudentTimetableView })));
 const AdminTimetableView = lazyWithRetry(() => import('./pages/AdminTimetableView').then((m) => ({ default: m.AdminTimetableView })));
 const SmsModule = lazyWithRetry(() => import('./pages/SmsModule').then((m) => ({ default: m.SmsModule })));
+const ParentSmsView = lazyWithRetry(() => import('./pages/ParentSmsView').then((m) => ({ default: m.ParentSmsView })));
 const StudentTestsView = lazyWithRetry(() => import('./pages/StudentTestsView').then((m) => ({ default: m.StudentTestsView })));
 const StudentOutpassView = lazyWithRetry(() => import('./pages/StudentOutpassView').then((m) => ({ default: m.StudentOutpassView })));
 const StudentHostelView = lazyWithRetry(() => import('./pages/StudentHostelView').then((m) => ({ default: m.StudentHostelView })));
 const DisciplineRecordsPage = lazyWithRetry(() => import('./pages/DisciplineRecordsPage').then((m) => ({ default: m.DisciplineRecordsPage })));
 const MyProfilePage = lazyWithRetry(() => import('./pages/MyProfilePage').then((m) => ({ default: m.MyProfilePage })));
 const QuestionPaperSuite = lazyWithRetry(() => import('./components/question-paper/QuestionPaperSuite').then((m) => ({ default: m.QuestionPaperSuite })));
+const TabManagementPage = lazyWithRetry(() => import('./pages/TabManagementPage').then((m) => ({ default: m.TabManagementPage })));
+const StudentTabView = lazyWithRetry(() => import('./pages/StudentTabView').then((m) => ({ default: m.StudentTabView })));
 
 const AcademicLoading = () => <div className="mt-bars" role="status" aria-label="Loading"><i /><i /><i /></div>;
 
@@ -179,6 +182,10 @@ export function App() {
     'exam-seating': 'Exam Seating',
     'live-class': 'Live Class',
     sms: 'Sms',
+    announcements: 'Announcements',
+    complaints: 'Complaint Box',
+    materials: 'Study Materials',
+    notes: 'Lecture Notes',
     noticeboard: 'Noticeboard',
     counsellings: 'Counselling',
     'college-calendar': 'College Calendar',
@@ -192,7 +199,8 @@ export function App() {
     leaderboard: 'Leaderboard',
     settings: 'Settings',
     'report-card': 'Report Card',
-    'parent-connect': 'Parent Connect'
+    'parent-connect': 'Parent Connect',
+    'tab-management': 'Tab Management'
   };
 
   // While the saved session is being checked, show a light splash instead of an empty app shell
@@ -234,7 +242,9 @@ export function App() {
         <main key={`${activeTab}-${navNonce}`} className="mt-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-10">
           <ScreenBoundary resetKey={`${activeTab}-${navNonce}`} onHome={() => selectTab('dashboard-home')}>
           <Suspense fallback={<AcademicLoading />}>
-          {activeTab === 'dashboard-home' ? (
+          {user?.role === 'STUDENT_TAB' ? (
+            <StudentTabView activeModule={activeTab === 'dashboard-home' ? 'dashboard' : activeTab} onNavigate={(tab) => selectTab(tab)} />
+          ) : activeTab === 'dashboard-home' ? (
             <DashboardHome onNavigateTab={(tab) => selectTab(tab)} />
           ) : activeTab === 'staffs' && (leadRole || user?.role === 'EXAM_DEPARTMENT' || !!myDept) ? (
             <Suspense fallback={<AcademicLoading />}><StaffsAcademic onExit={() => setActiveTab('dashboard-home')} lockDept={myDept || undefined} /></Suspense>
@@ -258,6 +268,8 @@ export function App() {
             <AdmissionAcademic onExit={() => selectTab('dashboard-home')} />
           ) : activeTab === 'parent-connect' ? (
             <ParentConnectAcademic onExit={() => selectTab('dashboard-home')} />
+          ) : activeTab === 'tab-management' && leadRole ? (
+            <Suspense fallback={<AcademicLoading />}><TabManagementPage onExit={() => selectTab('dashboard-home')} /></Suspense>
           ) : activeTab === 'leaderboard' && academicRole ? (
             <LeaderboardAcademic onExit={() => selectTab('dashboard-home')} only={myClasses} />
           ) : activeTab === 'exam-management' ? (
@@ -456,22 +468,22 @@ export function App() {
                 </button>
                 <div>
                   <h1 className="text-lg font-bold text-slate-900 font-heading">
-                    {user?.role === 'STUDENT'
-                      ? 'My Class Timetable'
+                    {user?.role === 'STUDENT' || user?.role === 'PARENT'
+                      ? (user?.role === 'PARENT' ? "Ward's Class Timetable" : 'My Class Timetable')
                       : user?.role === 'ADMIN' || user?.role === 'PRINCIPAL'
                       ? 'Institutional Timetable — All Classes'
                       : 'Institutional Timetable & Substitutions'}
                   </h1>
                   <p className="text-xs text-slate-500">
-                    {user?.role === 'STUDENT'
-                      ? 'SIR MV PU College • Your Weekly Lecture Schedule'
+                    {user?.role === 'STUDENT' || user?.role === 'PARENT'
+                      ? 'SIR MV PU College • Weekly Lecture Schedule'
                       : user?.role === 'ADMIN' || user?.role === 'PRINCIPAL'
                       ? 'SIR MV PU College • Published Timetables for Every Class, Section & Batch'
                       : 'SIR MV PU College • Daily Lecture Matrices'}
                   </p>
                 </div>
               </div>
-              {user?.role === 'STUDENT' ? (
+              {user?.role === 'STUDENT' || user?.role === 'PARENT' ? (
                 <StudentTimetableView />
               ) : user?.role === 'ADMIN' || user?.role === 'PRINCIPAL' ? (
                 <AdminTimetableView />
@@ -546,7 +558,7 @@ export function App() {
                   <p className="text-xs text-slate-500">SIR MV PU College • Online & Offline Tests</p>
                 </div>
               </div>
-              {user?.role === 'STUDENT' ? <StudentTestsView /> : <TestsPage />}
+              {(user?.role === 'STUDENT' || user?.role === 'PARENT') ? <StudentTestsView /> : <TestsPage />}
             </div>
           ) : activeTab === 'board-marks' ? (
             <div className="space-y-6 max-w-7xl mx-auto">
@@ -619,14 +631,16 @@ export function App() {
                 </button>
                 <div>
                   <h1 className="text-lg font-bold text-slate-900 font-heading">
-                    SMS Notification Workflow
+                    {user?.role === 'PARENT' ? 'Parent SMS Inbox & Official Alerts' : 'SMS Notification Workflow'}
                   </h1>
                   <p className="text-xs text-slate-500">
-                    SIR MV PU College • Automated Alerts & Manual Messaging to Parents
+                    {user?.role === 'PARENT'
+                      ? 'SIR MV PU College • PTM Schedules, Result Announcements & Ward Alerts'
+                      : 'SIR MV PU College • Automated Alerts & Manual Messaging to Parents'}
                   </p>
                 </div>
               </div>
-              <SmsModule />
+              {user?.role === 'PARENT' ? <ParentSmsView /> : <SmsModule />}
             </div>
           ) : activeTab === 'noticeboard' ? (
             <div className="space-y-6 max-w-5xl mx-auto">

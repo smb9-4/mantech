@@ -17,18 +17,34 @@ export const guessGender = (name: string): 'Male' | 'Female' => {
 };
 
 const ROLE: Record<string, PortraitRole> = {
-  STUDENT: 'student', PARENT: 'parent', TEACHER: 'teacher', HOD: 'hod', ADMIN: 'admin', PRINCIPAL: 'admin',
+  STUDENT: 'student', STUDENT_TAB: 'student', PARENT: 'parent', TEACHER: 'teacher', HOD: 'hod', ADMIN: 'admin', PRINCIPAL: 'admin',
   WARDEN: 'staff', HEAD_WARDEN: 'staff', FLOOR_ATTENDER: 'staff', NON_TEACHING_STAFF: 'staff', GATE_STAFF: 'staff', EXAM_DEPARTMENT: 'staff',
 };
 const AGE: Record<string, number> = { student: 17, parent: 46, teacher: 32, hod: 49, admin: 52, staff: 38 };
 
 // the picture for a signed-in account: staff use their record in the staff list (same gender and age everywhere)
 export function portraitForAccount(u: { name: string; email?: string; role: string; id?: string }): PortraitSpec {
-  const role = ROLE[u.role] || 'staff';
+  const role = ROLE[u.role] || (u.role === 'STUDENT_TAB' ? 'student' : 'staff');
   const st = role !== 'student' && role !== 'parent' ? accountStaff(u.email, u.role as any) : null;
   if (st) return { seed: st.id, gender: st.gender, age: Math.min(62, 24 + st.experience + (st.id.length % 4)), role };
-  return { seed: u.id || u.email || u.name, gender: guessGender(u.name), age: AGE[role], role };
+  return { seed: u.id || u.email || u.name, gender: guessGender(u.name), age: AGE[role] || 17, role };
 }
-export const accountPortraitUrl = (u: { name: string; email?: string; role: string; id?: string }) => portraitUrl(portraitForAccount(u));
+export const accountPortraitUrl = (u: { name: string; email?: string; role: string; id?: string; photo_url?: string; avatarUrl?: string }) => {
+  if (!u) return '/student-profile.png';
+  const nameLower = (u.name || '').toLowerCase();
+  const emailLower = (u.email || '').toLowerCase();
+
+  // If student (role STUDENT or STUDENT_TAB, or Bhoomika / student email)
+  if (u.role === 'STUDENT_TAB' || u.role === 'STUDENT' || emailLower.includes('student') || nameLower.includes('bhoomika') || nameLower.includes('rahul')) {
+    if (nameLower.includes('rahul') || (guessGender(u.name) === 'Male' && !nameLower.includes('bhoomika') && !emailLower.includes('bhoomika'))) {
+      return '/portraits/ms18.webp';
+    }
+    return '/student-profile.png';
+  }
+
+  if (u.photo_url && !u.photo_url.includes('student_rahul')) return u.photo_url;
+  if ((u as any).avatarUrl && !(u as any).avatarUrl.includes('student_rahul')) return (u as any).avatarUrl;
+  return portraitUrl(portraitForAccount(u));
+};
 // (getStaff re-exported only so tree-shaking keeps the staff list lazily loaded with this module)
 void getStaff;

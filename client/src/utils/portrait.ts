@@ -101,6 +101,9 @@ const POOLS: Record<string, string[]> = {
   'staff-Male': P(['mp47', 'mp42', 'mt45', 'mp52b']), 'staff-Female': P(['fp42', 'fp49', 'ft30b']),
 };
 export function photoFor(spec: PortraitSpec): string | null {
+  if (spec.role === 'student') {
+    return spec.gender === 'Female' ? '/student-profile.png' : '/portraits/ms18.webp';
+  }
   const role = spec.role === 'hod' ? 'teacher' : spec.role;
   const key = role === 'teacher' ? `teacher-${spec.gender}-${spec.age >= 46 ? 'senior' : 'young'}` : `${role}-${spec.gender}`;
   const pool = POOLS[key];

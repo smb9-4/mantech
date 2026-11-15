@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Phone, PhoneOff } from 'lucide-react';
+import { Mic, MicOff, Phone, PhoneOff, Volume2, VolumeX } from 'lucide-react';
 import { useCall } from '../context/CallContext';
 import { Avatar } from '../academic/ui';
 import { fmtDuration } from '../services/parentConnect';
@@ -36,13 +36,26 @@ const Level: React.FC<{ stream: MediaStream | null; tone: string }> = ({ stream,
 };
 
 export const CallOverlay: React.FC = () => {
-  const { call, muted, localStream, remoteStream, answer, decline, hangUp, toggleMute } = useCall();
+  const { call, muted, speakerMuted, localStream, remoteStream, answer, decline, hangUp, toggleMute, toggleSpeaker } = useCall();
   const [secs, setSecs] = useState(0);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (audioElRef.current && remoteStream) {
+      audioElRef.current.srcObject = remoteStream;
+      audioElRef.current.muted = speakerMuted;
+      audioElRef.current.play().catch((err) => {
+        console.warn('[CallOverlay] DOM audio play failed:', err);
+      });
+    }
+  }, [remoteStream, speakerMuted]);
+
   useEffect(() => {
     if (!call?.startedAt || call.phase !== 'connected') { setSecs(0); return; }
     const t = window.setInterval(() => setSecs(Math.floor((Date.now() - call.startedAt!) / 1000)), 500);
     return () => clearInterval(t);
   }, [call?.startedAt, call?.phase]);
+
   if (!call) return null;
 
   const person = personFor(call.peer);
@@ -51,6 +64,7 @@ export const CallOverlay: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-sm p-0 sm:p-4" role="dialog" aria-label="Voice call">
+      <audio ref={audioElRef} autoPlay playsInline style={{ display: 'none' }} />
       <div className="w-full sm:max-w-sm rounded-t-[28px] sm:rounded-[28px] overflow-hidden shadow-2xl text-white" style={{ background: 'linear-gradient(170deg,#7a1014 0%,#4a0709 70%)' }}>
         <div className="px-6 pt-8 pb-5 text-center">
           <div className="relative mx-auto w-28 h-28">
@@ -68,16 +82,44 @@ export const CallOverlay: React.FC = () => {
             </div>
           )}
         </div>
+
         <div className="px-6 pb-8 flex items-center justify-center gap-6">
           {incomingRinging ? (
             <>
-              <button onClick={decline} aria-label="Decline call" className="w-14 h-14 rounded-full bg-[#d33a3a] hover:bg-[#e04848] flex items-center justify-center shadow-lg"><PhoneOff className="w-6 h-6" /></button>
-              <button onClick={answer} aria-label="Answer call" className="w-14 h-14 rounded-full bg-[#1f9d57] hover:bg-[#25b365] flex items-center justify-center shadow-lg animate-pulse"><Phone className="w-6 h-6" /></button>
+              <button onClick={decline} aria-label="Decline call" className="w-14 h-14 rounded-full bg-[#d33a3a] hover:bg-[#e04848] flex items-center justify-center shadow-lg cursor-pointer"><PhoneOff className="w-6 h-6" /></button>
+              <button onClick={answer} aria-label="Answer call" className="w-14 h-14 rounded-full bg-[#1f9d57] hover:bg-[#25b365] flex items-center justify-center shadow-lg animate-pulse cursor-pointer"><Phone className="w-6 h-6" /></button>
             </>
           ) : call.phase === 'ended' ? null : (
             <>
-              <button onClick={toggleMute} aria-label={muted ? 'Unmute' : 'Mute'} className={`w-12 h-12 rounded-full flex items-center justify-center ${muted ? 'bg-white text-[#7a1014]' : 'bg-white/15 hover:bg-white/25'}`}>{muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}</button>
-              <button onClick={hangUp} aria-label="End call" className="w-14 h-14 rounded-full bg-[#d33a3a] hover:bg-[#e04848] flex items-center justify-center shadow-lg"><PhoneOff className="w-6 h-6" /></button>
+              {/* Option 1: Mute/Unmute Microphone */}
+              <button
+                onClick={toggleMute}
+                aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+                title={muted ? 'Unmute microphone' : 'Mute microphone'}
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition cursor-pointer ${muted ? 'bg-white text-[#7a1014] shadow-md' : 'bg-white/15 hover:bg-white/25 text-white'}`}
+              >
+                {muted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              </button>
+
+              {/* Option 2: Mute/Unmute Speaker */}
+              <button
+                onClick={toggleSpeaker}
+                aria-label={speakerMuted ? 'Turn on speaker' : 'Mute speaker'}
+                title={speakerMuted ? 'Turn on speaker' : 'Mute speaker'}
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition cursor-pointer ${speakerMuted ? 'bg-white text-[#7a1014] shadow-md' : 'bg-white/15 hover:bg-white/25 text-white'}`}
+              >
+                {speakerMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+              </button>
+
+              {/* Option 3: Hang up call */}
+              <button
+                onClick={hangUp}
+                aria-label="Hang up call"
+                title="Hang up call"
+                className="w-14 h-14 rounded-full bg-[#d33a3a] hover:bg-[#e04848] flex items-center justify-center shadow-lg text-white transition cursor-pointer"
+              >
+                <PhoneOff className="w-6 h-6" />
+              </button>
             </>
           )}
         </div>
