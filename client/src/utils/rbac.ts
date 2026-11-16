@@ -275,6 +275,7 @@ export function getRoleNavigation(role: UserRole | string | undefined): {
           { id: 'parent-connect', label: 'Parent Connect', icon: IconParentConnect, targetTab: 'parent-connect' },
           { id: 'tab-management', label: 'Tab Management', icon: IconTabManagement, targetTab: 'tab-management', description: 'Student tablet fleet control, kiosk lockdown & exam monitoring' },
           { id: 'settings', label: 'Settings', icon: IconSettings, targetTab: 'settings' },
+          ...(role === 'ADMIN' ? [{ id: 'stationary', label: 'Stationary', icon: IconClasses, iconSrc: '/stationary-icon.png', targetTab: 'stationary', description: 'Student stationery, materials & fee status' }] : [])
         ],
         otherTools: []
       };

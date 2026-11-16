@@ -63,6 +63,7 @@ const MyProfilePage = lazyWithRetry(() => import('./pages/MyProfilePage').then((
 const QuestionPaperSuite = lazyWithRetry(() => import('./components/question-paper/QuestionPaperSuite').then((m) => ({ default: m.QuestionPaperSuite })));
 const TabManagementPage = lazyWithRetry(() => import('./pages/TabManagementPage').then((m) => ({ default: m.TabManagementPage })));
 const StudentTabView = lazyWithRetry(() => import('./pages/StudentTabView').then((m) => ({ default: m.StudentTabView })));
+const StationaryPage = lazyWithRetry(() => import('./pages/StationaryPage').then((m) => ({ default: m.StationaryPage })));
 
 const AcademicLoading = () => <div className="mt-bars" role="status" aria-label="Loading"><i /><i /><i /></div>;
 
@@ -200,7 +201,8 @@ export function App() {
     settings: 'Settings',
     'report-card': 'Report Card',
     'parent-connect': 'Parent Connect',
-    'tab-management': 'Tab Management'
+    'tab-management': 'Tab Management',
+    stationary: 'Stationary'
   };
 
   // While the saved session is being checked, show a light splash instead of an empty app shell
@@ -344,6 +346,26 @@ export function App() {
                 </div>
               </div>
               <StudentsModule />
+            </div>
+          ) : activeTab === 'stationary' && user?.role === 'ADMIN' ? (
+            <div className="space-y-6 max-w-7xl mx-auto">
+              <div className="flex items-center gap-3 pb-2 border-b border-[#ded9cf]">
+                <button
+                  onClick={() => setActiveTab('dashboard-home')}
+                  className="p-2 bg-[#fdfcfb] hover:bg-white border border-[#ded9cf] rounded-xl text-slate-600 transition"
+                  title="Back to Dashboard"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <div className="flex items-center gap-3">
+                  <img src="/stationary-icon.png" alt="Stationery supplies" className="h-12 w-12 rounded-xl border border-[#ded9cf] bg-white p-1 object-contain" />
+                  <div>
+                    <h1 className="text-lg font-bold text-slate-900 font-heading">Stationary</h1>
+                    <p className="text-xs text-slate-500">SIR MV PU College • Student supplies & fee status</p>
+                  </div>
+                </div>
+              </div>
+              <StationaryPage />
             </div>
           ) : activeTab === 'attendance' ? (
             <div className="space-y-6 max-w-7xl mx-auto">
