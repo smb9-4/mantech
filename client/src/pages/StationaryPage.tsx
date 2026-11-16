@@ -68,6 +68,8 @@ const formatCurrency = (amount: number) =>
 const initials = (name: string) =>
   name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
 
+const studentCellHover = 'transition-colors duration-200 group-hover:bg-[#fcf8f2] group-focus:bg-[#fcf8f2] group-hover:shadow-[inset_0_1px_0_rgba(212,168,103,0.65),inset_0_-1px_0_rgba(212,168,103,0.65)] group-focus:shadow-[inset_0_1px_0_rgba(212,168,103,0.65),inset_0_-1px_0_rgba(212,168,103,0.65)]';
+
 function StudentAvatar({ student, size = 'normal' }: { student: StationaryStudent; size?: 'normal' | 'large' }) {
   const [imageFailed, setImageFailed] = useState(false);
   const dimensions = size === 'large' ? 'w-16 h-16 text-lg' : 'w-10 h-10 text-xs';
@@ -182,9 +184,9 @@ export const StationaryPage: React.FC = () => {
                     onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedStudent(student); } }}
                     tabIndex={0}
                     aria-label={`View ${student.name} stationery and fees`}
-                    className="group cursor-pointer transition-colors hover:bg-[#fcf8f2] focus:bg-[#fcf8f2] focus:outline-none"
+                    className="group cursor-pointer focus:outline-none hover:shadow-[0_0_16px_rgba(164,20,25,0.14)] focus:shadow-[0_0_16px_rgba(164,20,25,0.14)]"
                   >
-                    <td className="sticky left-0 bg-white px-4 py-3 transition-colors group-hover:bg-[#fcf8f2] sm:px-5">
+                    <td className={`sticky left-0 bg-white px-4 py-3 sm:px-5 ${studentCellHover}`}>
                       <div className="flex items-center gap-3">
                         <StudentAvatar student={student} />
                         <div className="min-w-0">
@@ -193,14 +195,14 @@ export const StationaryPage: React.FC = () => {
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-3">
+                    <td className={`px-3 py-3 ${studentCellHover}`}>
                       <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold ${feePaid ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
                         {feePaid ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
                         {feePaid ? 'Paid' : 'Due'}
                       </span>
                     </td>
                     {MATERIALS.map((material) => (
-                      <td className="px-3 py-3 text-center" key={material.key}>
+                      <td className={`px-3 py-3 text-center ${studentCellHover}`} key={material.key}>
                         {student.materials[material.key]
                           ? <Check className="mx-auto h-4 w-4 text-emerald-600" aria-label="Received" />
                           : <X className="mx-auto h-4 w-4 text-slate-300" aria-label="Not received" />}
