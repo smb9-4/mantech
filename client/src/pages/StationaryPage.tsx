@@ -226,7 +226,7 @@ export const StationaryPage: React.FC = () => {
 
       {selectedStudent && (
         <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/25 p-4 backdrop-blur-[6px]"
           onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedStudent(null); }}
           role="presentation"
         >
